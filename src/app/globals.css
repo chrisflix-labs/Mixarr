@@ -1,0 +1,221 @@
+:root {
+  /* Dynamic Background Colors */
+  --bg-base: #09090b;
+  --bg-surface: rgba(24, 24, 27, 0.65);
+  --bg-surface-hover: rgba(39, 39, 42, 0.85);
+  
+  --text-primary: #f8fafc;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  
+  /* Vibrant Accents */
+  --accent-primary: #8b5cf6;
+  --accent-primary-hover: #a78bfa;
+  
+  --accent-blue: #3b82f6;
+  --accent-blue-hover: #60a5fa;
+  
+  --accent-yellow: #f59e0b;
+  
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.5rem;
+  
+  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html, body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-inter), sans-serif;
+  letter-spacing: -0.02em;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-outfit), sans-serif;
+  letter-spacing: -0.04em;
+  font-weight: 700;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* --- Animated Mesh Gradient Background --- */
+.mesh-bg {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  overflow: hidden;
+  background: var(--bg-base);
+  pointer-events: none;
+}
+
+.mesh-blob-1, .mesh-blob-2 {
+  position: absolute;
+  filter: blur(100px);
+  border-radius: 50%;
+  opacity: 0.4;
+  animation: blob-float 20s infinite alternate ease-in-out;
+}
+
+.mesh-blob-1 {
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, var(--accent-primary) 0%, rgba(139,92,246,0) 70%);
+  top: -100px;
+  left: -100px;
+}
+
+.mesh-blob-2 {
+  width: 800px;
+  height: 800px;
+  background: radial-gradient(circle, var(--accent-blue) 0%, rgba(59,130,246,0) 70%);
+  bottom: -200px;
+  right: -200px;
+  animation-delay: -10s;
+}
+
+@keyframes blob-float {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(100px, 50px) scale(1.2); }
+  100% { transform: translate(-50px, 150px) scale(0.9); }
+}
+
+/* --- Glassmorphism Utilities --- */
+.glass-panel {
+  background: var(--bg-surface) !important;
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid var(--border-subtle) !important;
+  box-shadow: var(--glass-shadow);
+}
+
+/* --- Transitions & Micro-Animations --- */
+button, a, input, select {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+}
+
+button:active {
+  transform: translateY(0);
+}
+
+/* Input Focus Glow */
+input:focus, select:focus {
+  border-color: var(--accent-primary) !important;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
+}
+
+/* Table rows smooth hover */
+tr {
+  transition: background-color 0.2s ease;
+}
+tr:hover {
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* --- Layout Wrappers --- */
+.app-container {
+  display: flex;
+  min-height: 100vh;
+  position: relative;
+  z-index: 10;
+}
+
+.main-content {
+  flex: 1;
+  padding: 2.5rem 3rem;
+  height: 100vh;
+  overflow-y: auto;
+  padding-bottom: 2.5rem;
+}
+
+/* --- Responsive Media Queries --- */
+@media (max-width: 768px) {
+  .app-container {
+    flex-direction: column;
+  }
+  
+  .main-content {
+    padding: 1.5rem 1rem;
+    padding-bottom: 100px; /* Leave space for bottom nav */
+    height: auto;
+    min-height: 100vh;
+    overflow-y: visible;
+  }
+}
+
+.builder-container {
+  display: flex;
+  gap: 2rem;
+  height: 100%;
+}
+
+@media (max-width: 768px) {
+  .builder-container {
+    flex-direction: column;
+    height: auto;
+  }
+}
+
+.rule-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.table-container {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+}
+
+@media (max-width: 768px) {
+  .rule-row {
+    flex-wrap: wrap;
+  }
+  .rule-row > * {
+    flex: 1 1 calc(50% - 0.5rem);
+    min-width: 120px;
+  }
+}

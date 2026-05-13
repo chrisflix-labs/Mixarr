@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mixarr_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mixarr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mixarrpass}
+      POSTGRES_DB: ${POSTGRES_DB:-mixarrdb}
+    volumes:
+      - mixarr_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mixarr} -d ${POSTGRES_DB:-mixarrdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: mixarr_app
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-mixarr}:${POSTGRES_PASSWORD:-mixarrpass}@db:5432/${POSTGRES_DB:-mixarrdb}?schema=public
+      - PLEX_CLIENT_IDENTIFIER=${PLEX_CLIENT_IDENTIFIER}
+      - PLEX_PRODUCT_NAME=${PLEX_PRODUCT_NAME:-Mixarr}
+      - DEFAULT_POPULARITY_PROVIDER=${DEFAULT_POPULARITY_PROVIDER:-deezer}
+      - LASTFM_API_KEY=${LASTFM_API_KEY}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+      - POPULARITY_REFRESH_DAYS=${POPULARITY_REFRESH_DAYS:-30}
+      - MAX_PLAYLIST_SIZE=${MAX_PLAYLIST_SIZE:-5000}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - mixarr_app_logs:/app/logs
+
+volumes:
+  mixarr_db_data:
+  mixarr_app_logs:
