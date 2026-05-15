@@ -44,6 +44,33 @@ async function processInChunks<T>(items: T[], chunkSize: number, processFn: (ite
   }
 }
 
+function normalizeTrackTitle(title: string) {
+  return title
+    .toLowerCase()
+    .replace(/\([^)]*(remaster|remastered|live|explicit|mono|stereo|deluxe|version)[^)]*\)/gi, "")
+    .replace(/\[[^\]]*(remaster|remastered|live|explicit|mono|stereo|deluxe|version)[^\]]*\]/gi, "")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function deriveTrackFlags(track: any) {
+  const title = String(track.title || "");
+  const album = String(track.parentTitle || "");
+  const combined = `${title} ${album}`.toLowerCase();
+  const contentRating = String(track.contentRating || track.rating || "").toLowerCase();
+
+  return {
+    contentRating: track.contentRating || null,
+    normalizedTitle: normalizeTrackTitle(title),
+    isExplicit: contentRating.includes("explicit"),
+    isLive: /\b(live|concert|session|unplugged)\b/.test(combined),
+    isRemaster: /\b(remaster|remastered|anniversary edition|deluxe edition)\b/.test(combined),
+    isHoliday: /\b(christmas|holiday|xmas|santa|noel|hanukkah|halloween)\b/.test(combined),
+    isIntroOutro: /\b(intro|outro|interlude|skit|prologue|epilogue)\b/.test(title.toLowerCase()),
+  };
+}
+
 export const runSyncEngine = async (libraryId: string) => {
   const syncLog = await prisma.syncLog.create({
     data: {
@@ -153,6 +180,7 @@ export const runSyncEngine = async (libraryId: string) => {
       const albumId = albumMap.get(track.parentRatingKey?.toString());
       
       if (!artistId || !albumId) return;
+      const trackFlags = deriveTrackFlags(track);
 
       await prisma.track.upsert({
         where: { libraryId_plexId: { libraryId, plexId: track.ratingKey.toString() } },
@@ -161,6 +189,15 @@ export const runSyncEngine = async (libraryId: string) => {
           duration: track.duration,
           trackIndex: track.index,
           rating: track.rating,
+          contentRating: trackFlags.contentRating,
+          normalizedTitle: trackFlags.normalizedTitle,
+          isExplicit: trackFlags.isExplicit,
+          isLive: trackFlags.isLive,
+          isRemaster: trackFlags.isRemaster,
+          isHoliday: trackFlags.isHoliday,
+          isIntroOutro: trackFlags.isIntroOutro,
+          viewCount: track.viewCount || track.playCount || 0,
+          lastViewedAt: track.lastViewedAt ? new Date(track.lastViewedAt * 1000) : undefined,
           updatedAt: track.updatedAt ? new Date(track.updatedAt * 1000) : undefined,
         },
         create: {
@@ -173,6 +210,15 @@ export const runSyncEngine = async (libraryId: string) => {
           duration: track.duration,
           trackIndex: track.index,
           rating: track.rating,
+          contentRating: trackFlags.contentRating,
+          normalizedTitle: trackFlags.normalizedTitle,
+          isExplicit: trackFlags.isExplicit,
+          isLive: trackFlags.isLive,
+          isRemaster: trackFlags.isRemaster,
+          isHoliday: trackFlags.isHoliday,
+          isIntroOutro: trackFlags.isIntroOutro,
+          viewCount: track.viewCount || track.playCount || 0,
+          lastViewedAt: track.lastViewedAt ? new Date(track.lastViewedAt * 1000) : undefined,
           addedAt: track.addedAt ? new Date(track.addedAt * 1000) : undefined,
           updatedAt: track.updatedAt ? new Date(track.updatedAt * 1000) : undefined,
         }

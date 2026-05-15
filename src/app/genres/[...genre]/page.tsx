@@ -1,13 +1,13 @@
 import type { Prisma } from "@prisma/client";
 import Link from "next/link";
 import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
-import { Disc3, Filter, Mic2, Music, Search, SlidersHorizontal, Star, Tag, Wand2 } from "lucide-react";
+import { notFound, redirect } from "next/navigation";
+import { ArrowLeft, Disc3, ListMusic, Search, SlidersHorizontal, Star, Tag, Wand2 } from "lucide-react";
 import prisma from "@/lib/prisma";
 import BlockTrackButton from "@/components/BlockTrackButton";
 import TrackPreviewButton from "@/components/TrackPreviewButton";
 import { isArtistOrGroupTag, normalizeGenreName } from "@/lib/genreFilters";
-import styles from "./library.module.css";
+import styles from "../../library/library.module.css";
 
 const pageSize = 50;
 const sortOptions = ["popular", "recent", "title", "artist", "year", "plays"] as const;
@@ -17,7 +17,19 @@ function asOption<T extends readonly string[]>(value: string | undefined, option
   return options.includes(value as T[number]) ? value as T[number] : fallback;
 }
 
-function buildHref(basePath: string, values: Record<string, string | number | undefined>) {
+function buildHref(genre: string, values: Record<string, string | number | undefined>) {
+  const params = new URLSearchParams();
+  Object.entries(values).forEach(([key, value]) => {
+    if (value !== undefined && value !== "" && value !== "all") {
+      params.set(key, String(value));
+    }
+  });
+  const query = params.toString();
+  const path = `/genres/${encodeURIComponent(genre)}`;
+  return query ? `${path}?${query}` : path;
+}
+
+function buildQueryHref(basePath: string, values: Record<string, string | number | undefined>) {
   const params = new URLSearchParams();
   Object.entries(values).forEach(([key, value]) => {
     if (value !== undefined && value !== "" && value !== "all") {
@@ -36,10 +48,22 @@ function formatDuration(duration?: number | null) {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-export default async function LibraryPage({
+function decodeGenreParam(parts: string[]) {
+  return parts.map((part) => {
+    try {
+      return decodeURIComponent(part);
+    } catch {
+      return part;
+    }
+  }).join("/");
+}
+
+export default async function GenreDetailPage({
+  params,
   searchParams,
 }: {
-  searchParams: { page?: string; q?: string; query?: string; genre?: string; sort?: string; trait?: string; minPopularity?: string };
+  params: { genre: string[] };
+  searchParams: { page?: string; q?: string; sort?: string; trait?: string; minPopularity?: string };
 }) {
   const cookieStore = cookies();
   const sessionId = cookieStore.get("mixarr_session")?.value;
@@ -48,9 +72,11 @@ export default async function LibraryPage({
     redirect("/");
   }
 
+  const genre = decodeGenreParam(params.genre).trim();
+  if (!genre) notFound();
+
   const page = Math.max(1, Number(searchParams.page) || 1);
-  const searchQuery = (searchParams.q || searchParams.query || "").trim();
-  const genre = (searchParams.genre || "").trim();
+  const q = (searchParams.q || "").trim();
   const sort = asOption(searchParams.sort, sortOptions, "popular");
   const trait = asOption(searchParams.trait, traitOptions, "all");
   const minPopularity = searchParams.minPopularity ? Number(searchParams.minPopularity) : undefined;
@@ -64,26 +90,30 @@ export default async function LibraryPage({
     },
   };
 
-  const filters: Prisma.TrackWhereInput[] = [userTrackScope];
+  const artistRows = await prisma.artist.findMany({
+    where: { library: { server: { userId: sessionId } } },
+    select: { title: true },
+  });
+  const artistNames = new Set(artistRows.map((artist) => normalizeGenreName(artist.title)));
+  if (isArtistOrGroupTag(genre, artistNames)) notFound();
 
-  if (searchQuery) {
+  const genreCondition: Prisma.TrackWhereInput = {
+    tags: {
+      some: {
+        type: "genre",
+        name: { equals: genre, mode: "insensitive" },
+      },
+    },
+  };
+  const filters: Prisma.TrackWhereInput[] = [userTrackScope, genreCondition];
+
+  if (q) {
     filters.push({
       OR: [
-        { title: { contains: searchQuery, mode: "insensitive" } },
-        { artist: { title: { contains: searchQuery, mode: "insensitive" } } },
-        { album: { title: { contains: searchQuery, mode: "insensitive" } } },
+        { title: { contains: q, mode: "insensitive" } },
+        { artist: { title: { contains: q, mode: "insensitive" } } },
+        { album: { title: { contains: q, mode: "insensitive" } } },
       ],
-    });
-  }
-
-  if (genre) {
-    filters.push({
-      tags: {
-        some: {
-          type: "genre",
-          name: { equals: genre, mode: "insensitive" },
-        },
-      },
     });
   }
 
@@ -108,7 +138,7 @@ export default async function LibraryPage({
     sort === "plays" ? [{ viewCount: "desc" }, { title: "asc" }] :
     [{ popularity: { score: "desc" } }, { addedAt: "desc" }];
 
-  const [tracks, totalTracks, totalArtists, totalAlbums, artistRows, rawGenreTags, taggedTrackCount] = await Promise.all([
+  const [tracks, totalTracks, artistCount, albumCount, genreRecord] = await Promise.all([
     prisma.track.findMany({
       where: whereClause,
       include: {
@@ -119,7 +149,7 @@ export default async function LibraryPage({
         tags: {
           where: { type: "genre" },
           orderBy: { name: "asc" },
-          take: 4,
+          take: 5,
         },
         blockedBy: {
           where: { userId: sessionId },
@@ -131,41 +161,24 @@ export default async function LibraryPage({
       take: pageSize,
     }),
     prisma.track.count({ where: whereClause }),
-    prisma.artist.count({ where: { library: { server: { userId: sessionId } } } }),
-    prisma.album.count({ where: { library: { server: { userId: sessionId } } } }),
-    prisma.artist.findMany({
-      where: { library: { server: { userId: sessionId } } },
-      select: { title: true },
-    }),
-    prisma.tag.findMany({
+    prisma.artist.count({ where: { tracks: { some: { AND: [userTrackScope, genreCondition] } } } }),
+    prisma.album.count({ where: { tracks: { some: { AND: [userTrackScope, genreCondition] } } } }),
+    prisma.tag.findFirst({
       where: {
         type: "genre",
+        name: { equals: genre, mode: "insensitive" },
         tracks: { some: userTrackScope },
       },
-      select: {
-        id: true,
-        name: true,
-        _count: {
-          select: {
-            tracks: { where: userTrackScope },
-          },
-        },
-      },
     }),
-    prisma.track.count({ where: { AND: [userTrackScope, { tags: { some: { type: "genre" } } }] } }),
   ]);
 
-  const artistNames = new Set(artistRows.map((artist) => normalizeGenreName(artist.title)));
-  const genreOptions = rawGenreTags
-    .filter((tag) => tag._count.tracks > 0 && !isArtistOrGroupTag(tag.name, artistNames))
-    .sort((a, b) => b._count.tracks - a._count.tracks || a.name.localeCompare(b.name));
+  if (!genreRecord) notFound();
 
-  const topGenres = genreOptions.slice(0, 10);
   const totalPages = Math.max(1, Math.ceil(totalTracks / pageSize));
   const boundedPage = Math.min(page, totalPages);
+  const pageTopPopularity = tracks.reduce((max, track) => Math.max(max, track.popularity?.score || 0), 0);
   const baseParams = {
-    q: searchQuery,
-    genre,
+    q,
     sort,
     trait,
     minPopularity: Number.isFinite(minPopularity) ? minPopularity : undefined,
@@ -173,55 +186,48 @@ export default async function LibraryPage({
 
   return (
     <>
-      <header className={styles.pageHeader}>
+      <header className={styles.detailHero}>
         <div>
-          <h2>Library Explorer</h2>
-          <p>Browse, sort, and slice your synced Plex tracks.</p>
+          <Link href="/genres" className={styles.textButton}>
+            <ArrowLeft size={15} /> Genres
+          </Link>
+          <h2 style={{ fontSize: "2.25rem", margin: "1rem 0 0.5rem 0" }}>{genre}</h2>
+          <p className={styles.muted}>Tracks tagged with this genre in your synced Plex library.</p>
         </div>
         <div className={styles.headerActions}>
-          <Link href={buildHref("/builder", { from: "library", ...baseParams })} className={styles.secondaryButton}>
-            <Wand2 size={16} /> Build From View
+          <Link href={buildQueryHref("/builder", { from: "genres", genre, q, sort, trait, minPopularity: Number.isFinite(minPopularity) ? minPopularity : undefined })} className={styles.secondaryButton}>
+            <Wand2 size={16} /> Build From Genre
           </Link>
-          <Link href="/genres" className={styles.primaryButton}>
-            <Tag size={16} /> Genres
+          <Link href={`/library?genre=${encodeURIComponent(genre)}`} className={styles.secondaryButton}>
+            <ListMusic size={16} /> Open in Library
           </Link>
         </div>
       </header>
 
       <div className={styles.statGrid}>
         <div className={`glass-panel ${styles.statPanel}`}>
-          <div className={styles.iconWrap}><Music size={23} /></div>
+          <div className={styles.iconWrap}><Tag size={23} /></div>
           <div><h3>{totalTracks.toLocaleString()}</h3><p>Matching Tracks</p></div>
         </div>
         <div className={`glass-panel ${styles.statPanel}`}>
-          <div className={`${styles.iconWrap} ${styles.yellow}`}><Mic2 size={23} /></div>
-          <div><h3>{totalArtists.toLocaleString()}</h3><p>Total Artists</p></div>
+          <div className={`${styles.iconWrap} ${styles.yellow}`}><Star size={23} /></div>
+          <div><h3>{pageTopPopularity ? pageTopPopularity.toFixed(0) : "-"}</h3><p>Page Top Pop</p></div>
         </div>
         <div className={`glass-panel ${styles.statPanel}`}>
-          <div className={`${styles.iconWrap} ${styles.blue}`}><Disc3 size={23} /></div>
-          <div><h3>{totalAlbums.toLocaleString()}</h3><p>Total Albums</p></div>
+          <div className={`${styles.iconWrap} ${styles.blue}`}><ListMusic size={23} /></div>
+          <div><h3>{artistCount.toLocaleString()}</h3><p>Artists</p></div>
         </div>
         <div className={`glass-panel ${styles.statPanel}`}>
-          <div className={styles.iconWrap}><Tag size={23} /></div>
-          <div><h3>{taggedTrackCount.toLocaleString()}</h3><p>Tagged Tracks</p></div>
+          <div className={styles.iconWrap}><Disc3 size={23} /></div>
+          <div><h3>{albumCount.toLocaleString()}</h3><p>Albums</p></div>
         </div>
       </div>
 
-      <form action="/library" className={`glass-panel ${styles.filtersPanel}`}>
+      <form action={`/genres/${encodeURIComponent(genre)}`} className={`glass-panel ${styles.filtersPanel}`}>
         <div className={styles.filterGrid}>
           <label className={styles.field}>
-            Search
-            <input className={styles.input} name="q" defaultValue={searchQuery} placeholder="Track, artist, or album" />
-          </label>
-          <label className={styles.field}>
-            Genre
-            <select className={styles.select} name="genre" defaultValue={genre}>
-              <option value="">All genres</option>
-              {genre && !genreOptions.some((tag) => tag.name === genre) && <option value={genre}>{genre}</option>}
-              {genreOptions.slice(0, 200).map((tag) => (
-                <option key={tag.id} value={tag.name}>{tag.name} ({tag._count.tracks})</option>
-              ))}
-            </select>
+            Search This Genre
+            <input className={styles.input} name="q" defaultValue={q} placeholder="Track, artist, or album" />
           </label>
           <label className={styles.field}>
             Sort
@@ -251,23 +257,12 @@ export default async function LibraryPage({
             Min Popularity
             <input className={styles.input} type="number" name="minPopularity" min="0" max="100" defaultValue={Number.isFinite(minPopularity) ? String(minPopularity) : ""} placeholder="0-100" />
           </label>
-        </div>
-        <div className={styles.quickChips}>
-          <button className={styles.secondaryButton} type="submit">
-            <Search size={15} /> Apply
-          </button>
-          <Link href="/library" className={styles.textButton}>
-            <Filter size={15} /> Clear
-          </Link>
-          {topGenres.map((tag) => (
-            <Link
-              key={tag.id}
-              href={buildHref("/library", { ...baseParams, genre: tag.name, page: 1 })}
-              className={styles.genreChip}
-            >
-              <Tag size={13} /> {tag.name}
-            </Link>
-          ))}
+          <div className={styles.filterActions}>
+            <button type="submit" className={styles.primaryButton}>
+              <Search size={15} /> Apply
+            </button>
+            <Link href={`/genres/${encodeURIComponent(genre)}`} className={styles.textButton}>Clear</Link>
+          </div>
         </div>
       </form>
 
@@ -288,7 +283,7 @@ export default async function LibraryPage({
                     <th>Track</th>
                     <th>Artist</th>
                     <th className={styles.hideMobile}>Album</th>
-                    <th>Genres</th>
+                    <th>Related Genres</th>
                     <th className={styles.hideMobile}>Stats</th>
                     <th className={styles.nowrap}>Popularity</th>
                     <th>Actions</th>
@@ -319,11 +314,11 @@ export default async function LibraryPage({
                         </td>
                         <td>
                           <div className={styles.genreList}>
-                            {displayTags.length > 0 ? displayTags.map((tag) => (
+                            {displayTags.map((tag) => (
                               <Link key={tag.id} href={`/genres/${encodeURIComponent(tag.name)}`} className={styles.genreChip}>
                                 {tag.name}
                               </Link>
-                            )) : <span className={styles.subtle}>Untagged</span>}
+                            ))}
                           </div>
                         </td>
                         <td className={`${styles.muted} ${styles.hideMobile}`}>
@@ -344,16 +339,16 @@ export default async function LibraryPage({
                         ) : (
                           <span className={styles.subtle}>N/A</span>
                         )}
-                      </td>
-                      <td>
-                        <div className={styles.trackActions}>
-                          <TrackPreviewButton trackId={track.id} />
-                          <BlockTrackButton trackId={track.id} initialBlocked={track.blockedBy.length > 0} />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                        </td>
+                        <td>
+                          <div className={styles.trackActions}>
+                            <TrackPreviewButton trackId={track.id} />
+                            <BlockTrackButton trackId={track.id} initialBlocked={track.blockedBy.length > 0} />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -363,13 +358,13 @@ export default async function LibraryPage({
               </span>
               <div className={styles.pagerControls}>
                 <Link
-                  href={buildHref("/library", { ...baseParams, page: Math.max(1, boundedPage - 1) })}
+                  href={buildHref(genre, { ...baseParams, page: Math.max(1, boundedPage - 1) })}
                   className={`${styles.secondaryButton} ${boundedPage === 1 ? styles.disabled : ""}`}
                 >
                   Previous
                 </Link>
                 <Link
-                  href={buildHref("/library", { ...baseParams, page: Math.min(totalPages, boundedPage + 1) })}
+                  href={buildHref(genre, { ...baseParams, page: Math.min(totalPages, boundedPage + 1) })}
                   className={`${styles.secondaryButton} ${boundedPage === totalPages ? styles.disabled : ""}`}
                 >
                   Next

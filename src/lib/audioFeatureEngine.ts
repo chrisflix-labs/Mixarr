@@ -31,6 +31,10 @@ export const runAudioFeatureEngine = async () => {
           const finalValence = features ? features.valence : 0.5;
           const finalDanceability = features ? features.danceability : 0.5;
           const finalTempo = bpm ? bpm : (features ? features.tempo : 120);
+          const source = features?.source || (bpm ? "Deezer BPM only" : "estimated");
+          const tempoSource = bpm ? "Deezer" : (features ? features.source : "estimated");
+          const confidence = features ? 0.65 : 0.35;
+          const tempoConfidence = bpm ? 0.9 : (features ? 0.45 : 0.2);
 
           await prisma.audioFeature.upsert({
             where: { trackId: track.id },
@@ -39,6 +43,10 @@ export const runAudioFeatureEngine = async () => {
               valence: finalValence,
               danceability: finalDanceability,
               tempo: finalTempo,
+              source,
+              confidence,
+              tempoSource,
+              tempoConfidence,
               lastUpdated: new Date()
             },
             create: {
@@ -47,6 +55,10 @@ export const runAudioFeatureEngine = async () => {
               valence: finalValence,
               danceability: finalDanceability,
               tempo: finalTempo,
+              source,
+              confidence,
+              tempoSource,
+              tempoConfidence,
               lastUpdated: new Date()
             }
           });
@@ -57,6 +69,10 @@ export const runAudioFeatureEngine = async () => {
           await prisma.audioFeature.create({
             data: {
               trackId: track.id,
+              source: "not_found",
+              confidence: 0,
+              tempoSource: "not_found",
+              tempoConfidence: 0,
               lastUpdated: new Date()
             }
           });

@@ -1,7 +1,7 @@
 "use client";
 
 import styles from "./Sidebar.module.css";
-import { AudioWaveform, LayoutDashboard, ListMusic, Settings, Wand2 } from "lucide-react";
+import { AudioWaveform, LayoutDashboard, ListMusic, Settings, Tags, Wand2 } from "lucide-react";
 import PlexLoginButton from "./PlexLoginButton";
 import LogoutButton from "./LogoutButton";
 import Link from "next/link";
@@ -31,6 +31,9 @@ export default function Sidebar({ user }: { user: any }) {
         </Link>
         <Link href="/library" className={`${styles.navItem} ${pathname === "/library" ? styles.active : ""}`}>
           <ListMusic size={18} /> Library
+        </Link>
+        <Link href="/genres" className={`${styles.navItem} ${pathname.startsWith("/genres") ? styles.active : ""}`}>
+          <Tags size={18} /> Genres
         </Link>
         <Link href="/settings" className={`${styles.navItem} ${pathname === "/settings" ? styles.active : ""}`}>
           <Settings size={18} /> Settings

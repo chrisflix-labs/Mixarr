@@ -1,5 +1,6 @@
 import { Settings as SettingsIcon, Database, Key, Server, RefreshCw } from "lucide-react";
 import ProviderTestButton from "@/components/ProviderTestButton";
+import LibraryDefaultSelector from "@/components/LibraryDefaultSelector";
 
 export default function SettingsPage() {
   return (
@@ -71,6 +72,10 @@ export default function SettingsPage() {
           <div>
             <label style={{ display: "block", fontSize: "0.875rem", color: "var(--text-secondary)", marginBottom: "0.25rem" }}>Product Name</label>
             <input type="text" readOnly value={process.env.PLEX_PRODUCT_NAME || "Mixarr"} style={inputStyle} />
+          </div>
+          <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "1rem" }}>
+            <h4 style={{ margin: "0 0 0.75rem 0", fontSize: "1rem" }}>Default Playlist Source</h4>
+            <LibraryDefaultSelector />
           </div>
         </div>
       </section>

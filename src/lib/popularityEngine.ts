@@ -22,6 +22,7 @@ export const runPopularityEngine = async () => {
     for (const track of tracksToProcess) {
       let score: number | null = null;
       let provider = "none";
+      let confidence = 0;
 
       try {
         // 1. Try Deezer (Primary)
@@ -29,18 +30,21 @@ export const runPopularityEngine = async () => {
         if (dScore != null && !isNaN(dScore)) {
           score = dScore;
           provider = "deezer";
+          confidence = 0.75;
         } else {
           // 2. Fallback to Last.fm
           let lScore = await getLastFmPopularity(track.artist.title, track.title);
           if (lScore != null && !isNaN(lScore)) {
             score = lScore;
             provider = "lastfm";
+            confidence = 0.7;
           } else {
             // 3. Fallback to Spotify
             let sScore = await getSpotifyPopularity(track.artist.title, track.title);
             if (sScore != null && !isNaN(sScore)) {
               score = sScore;
               provider = "spotify";
+              confidence = 0.8;
             }
           }
         }
@@ -52,12 +56,18 @@ export const runPopularityEngine = async () => {
             update: {
               score,
               provider,
+              confidence,
+              matchedArtist: track.artist.title,
+              matchedTitle: track.title,
               lastUpdated: new Date()
             },
             create: {
               trackId: track.id,
               score,
               provider,
+              confidence,
+              matchedArtist: track.artist.title,
+              matchedTitle: track.title,
               lastUpdated: new Date()
             }
           });
@@ -71,6 +81,7 @@ export const runPopularityEngine = async () => {
               trackId: track.id,
               score: 0,
               provider: "not_found",
+              confidence: 0,
               lastUpdated: new Date()
             }
           });
