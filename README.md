@@ -64,6 +64,8 @@ docker-compose up -d --build
 - **Playlist Builder**: New Options, for smart playlist. New Playlist behavior with options to help control duplicate control. Matching rules are AND/OR instead of just AND
 
 ## Future Features
-
+- **Metadata Sync**: will and an optiion to control the value you want for sync
+settings. Instead of it being a hard coded value. 
+- **BMP Data**: New local BMP engine that samples plex with ffmpeg runs aubio, computes BPM from detected beat intervals. This will give a more accurate and complete BPM values for all your musictracks
 - **Ideas**: Have and idead for a future fearture 'https://www.reddit.com/r/Softwarr/comments/1tbfb0r/plexmix_smart_playlist_builder_for_plex/' leave a comment with your ideas.
 - **Discord**: will start a discord server if there is interest. Be a good way to provided feature ideas, get suggestions, and have feedback
