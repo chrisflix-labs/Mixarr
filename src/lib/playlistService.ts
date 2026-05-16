@@ -1,6 +1,14 @@
 import axios from "axios";
 import { z } from "zod";
 import prisma from "./prisma";
+import {
+  playlistExportDurationSeconds,
+  playlistExportsTotal,
+  playlistGenerationDurationSeconds,
+  playlistGenerationsTotal,
+  playlistRefreshDurationSeconds,
+  playlistRefreshesTotal,
+} from "./metrics";
 
 const numericFields = ["popularity", "energy", "valence", "tempo", "year", "duration", "rating", "playCount"] as const;
 const booleanFields = ["isLive", "isRemaster", "isExplicit", "hasPopularity"] as const;
@@ -287,23 +295,33 @@ export async function generatePlaylistTracks({
   userId: string;
   config: PlaylistConfigInput;
 }) {
-  const pinnedTracks = config.pinnedTrackIds.length
-    ? await fetchOwnedTracksInOrder(userId, config.pinnedTrackIds)
-    : [];
-  const blockedTracks = await prisma.blockedTrack.findMany({
-    where: { userId },
-    select: { trackId: true },
-  });
-  const omittedIds = config.excludedTrackIds
-    .concat(blockedTracks.map((track) => track.trackId))
-    .concat(pinnedTracks.map((track) => track.id));
-  const remainingLimit = Math.max(0, config.limit - pinnedTracks.length);
-  const take = config.duplicateStrategy === "allow" ? remainingLimit : Math.max(remainingLimit * 5, remainingLimit + 25);
-  const candidates = remainingLimit > 0 ? await queryCandidateTracks(userId, config, omittedIds, take) : [];
-  const generatedTracks = applyDuplicatePolicy(candidates, config, remainingLimit);
-  const reasons = collectRuleReasons(config.ruleTree, config.rules);
+  const endTimer = playlistGenerationDurationSeconds.startTimer();
+  let result: "success" | "failed" = "success";
+  try {
+    const pinnedTracks = config.pinnedTrackIds.length
+      ? await fetchOwnedTracksInOrder(userId, config.pinnedTrackIds)
+      : [];
+    const blockedTracks = await prisma.blockedTrack.findMany({
+      where: { userId },
+      select: { trackId: true },
+    });
+    const omittedIds = config.excludedTrackIds
+      .concat(blockedTracks.map((track) => track.trackId))
+      .concat(pinnedTracks.map((track) => track.id));
+    const remainingLimit = Math.max(0, config.limit - pinnedTracks.length);
+    const take = config.duplicateStrategy === "allow" ? remainingLimit : Math.max(remainingLimit * 5, remainingLimit + 25);
+    const candidates = remainingLimit > 0 ? await queryCandidateTracks(userId, config, omittedIds, take) : [];
+    const generatedTracks = applyDuplicatePolicy(candidates, config, remainingLimit);
+    const reasons = collectRuleReasons(config.ruleTree, config.rules);
 
-  return pinnedTracks.concat(generatedTracks).slice(0, config.limit).map((track) => annotateTrack(track, reasons));
+    return pinnedTracks.concat(generatedTracks).slice(0, config.limit).map((track) => annotateTrack(track, reasons));
+  } catch (error) {
+    result = "failed";
+    throw error;
+  } finally {
+    endTimer();
+    playlistGenerationsTotal.inc({ result });
+  }
 }
 
 async function fetchOwnedTracksInOrder(userId: string, trackIds: string[]) {
@@ -409,6 +427,8 @@ export async function exportTracksToPlex({
     throw new Error("Saved playlist was not found");
   }
 
+  const endTimer = playlistExportDurationSeconds.startTimer();
+  let exportResult: "success" | "failed" = "success";
   try {
     const playlistId = await pushTracksToPlex({
       server: targetServer,
@@ -451,6 +471,7 @@ export async function exportTracksToPlex({
       trackCount: tracks.length,
     };
   } catch (error: any) {
+    exportResult = "failed";
     await prisma.playlistHistory.create({
       data: {
         userId,
@@ -466,13 +487,50 @@ export async function exportTracksToPlex({
       },
     });
     throw error;
+  } finally {
+    endTimer();
+    playlistExportsTotal.inc({ result: exportResult });
   }
 }
 
-export async function refreshSavedPlaylist(ruleId: string) {
-  const rule = await prisma.playlistRule.findUnique({ where: { id: ruleId } });
-  if (!rule || !rule.plexPlaylistId || !rule.serverId) return null;
+// Process-local set of PlaylistRule IDs currently being refreshed. Mirrors
+// the manual-drain race guard from src/app/api/sync/start/route.ts: the
+// nightly cron's refreshAutoPlaylists() and the user-facing
+// POST /api/playlists/rules/[id]/refresh can otherwise both invoke this
+// for the same rule, racing on the same Plex playlist mutation (PUT /items,
+// DELETE /items, etc.). The end states usually converge, but the two
+// concurrent runs would double-count in mixarr_playlist_refresh metrics,
+// double-write PlaylistHistory rows, and in worst cases interleave the
+// "delete items" + "add items" calls in a way that leaves the Plex
+// playlist briefly empty or with duplicate entries.
+//
+// In-memory is sufficient because the Next.js server, the cron scheduler
+// and the metrics process all live in the same Node process (the
+// instrumentation hook); we don't have horizontal scale-out.
+const inflightRefreshes = new Set<string>();
 
+export function isRefreshInFlight(ruleId: string): boolean {
+  return inflightRefreshes.has(ruleId);
+}
+
+export type RefreshMode = "manual" | "auto";
+
+export async function refreshSavedPlaylist(ruleId: string, mode: RefreshMode = "manual") {
+  if (inflightRefreshes.has(ruleId)) {
+    console.warn(`[PlaylistRefresh] Skipping ${ruleId}; refresh already in flight.`);
+    playlistRefreshesTotal.inc({ mode, result: "skipped_locked" });
+    return null;
+  }
+
+  const rule = await prisma.playlistRule.findUnique({ where: { id: ruleId } });
+  if (!rule || !rule.plexPlaylistId || !rule.serverId) {
+    playlistRefreshesTotal.inc({ mode, result: "skipped_not_exported" });
+    return null;
+  }
+
+  inflightRefreshes.add(ruleId);
+  const endTimer = playlistRefreshDurationSeconds.startTimer({ mode });
+  let refreshResult: "success" | "failed" = "success";
   try {
     const savedRules = JSON.parse(rule.rulesJson);
     const parsed = playlistConfigSchema.parse({
@@ -522,6 +580,7 @@ export async function refreshSavedPlaylist(ruleId: string) {
       },
     });
   } catch (error: any) {
+    refreshResult = "failed";
     await prisma.playlistHistory.create({
       data: {
         userId: rule.userId,
@@ -545,6 +604,10 @@ export async function refreshSavedPlaylist(ruleId: string) {
         lastRefreshError: error.message || "Refresh failed",
       },
     });
+  } finally {
+    inflightRefreshes.delete(ruleId);
+    endTimer();
+    playlistRefreshesTotal.inc({ mode, result: refreshResult });
   }
 }
 
@@ -559,7 +622,7 @@ export async function refreshAutoPlaylists() {
   });
 
   for (const rule of rules) {
-    await refreshSavedPlaylist(rule.id);
+    await refreshSavedPlaylist(rule.id, "auto");
   }
 
   return rules.length;

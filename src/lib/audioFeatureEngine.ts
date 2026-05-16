@@ -3,8 +3,15 @@ import { getSpotifyAudioFeatures } from "./providers/spotify";
 import { getAudioDbFeatures } from "./providers/audiodb";
 import { getDeezerBpm } from "./providers/deezer";
 import { resolveDelayMs, resolveLimit, type SyncEngineOptions } from "./syncSettings";
+import {
+  engineBatchSize,
+  trackAttemptsTotal,
+  trackDurationSeconds,
+} from "./metrics";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const ENGINE = "audio_feature";
 
 export const runAudioFeatureEngine = async (options: SyncEngineOptions = {}) => {
   console.log("[AudioFeatureEngine] Starting background audio features sync...");
@@ -19,8 +26,11 @@ export const runAudioFeatureEngine = async (options: SyncEngineOptions = {}) => 
     });
 
     console.log(`[AudioFeatureEngine] Found ${tracksToProcess.length} tracks needing audio features.`);
+    engineBatchSize.observe({ engine: ENGINE }, tracksToProcess.length);
 
     for (const track of tracksToProcess) {
+      let outcome: "success" | "not_found" | "rate_limited" | "error" = "success";
+      const endTimer = trackDurationSeconds.startTimer({ engine: ENGINE });
       try {
         // 1. Try AudioDB (Only reliable source left since Spotify killed their Audio Features API)
         let features = await getAudioDbFeatures(track.artist.title, track.title);
@@ -79,13 +89,19 @@ export const runAudioFeatureEngine = async (options: SyncEngineOptions = {}) => 
               lastUpdated: new Date()
             }
           });
+          outcome = "not_found";
         }
       } catch (e: any) {
         if (e.message === "NO_TOKEN" || e.message?.startsWith("RATE_LIMIT")) {
           // Do not log the full stack trace for known auth/rate limits, just skip
+          outcome = "rate_limited";
         } else {
           console.error(`[AudioFeatureEngine] Unexpected error on track ${track.title}:`, e.message);
+          outcome = "error";
         }
+      } finally {
+        endTimer();
+        trackAttemptsTotal.inc({ engine: ENGINE, result: outcome });
       }
 
       if (providerDelayMs > 0) {
