@@ -1,6 +1,7 @@
 import prisma from "./prisma";
 import axios from "axios";
 import { resolveLimit, type SyncEngineOptions } from "./syncSettings";
+import { syncRunsTotal, syncDurationSeconds } from "./metrics";
 
 type PlexItem = Record<string, any> & {
   Genre?: Array<{ tag: string }>;
@@ -91,6 +92,9 @@ function deriveTrackFlags(track: any) {
 }
 
 export const runSyncEngine = async (libraryId: string, options: SyncEngineOptions = {}) => {
+  const endTimer = syncDurationSeconds.startTimer();
+  let result: "success" | "failed" = "success";
+
   const syncLog = await prisma.syncLog.create({
     data: {
       libraryId,
@@ -254,9 +258,13 @@ export const runSyncEngine = async (libraryId: string, options: SyncEngineOption
 
   } catch (error: any) {
     console.error(`[SyncEngine] Failed`, error);
+    result = "failed";
     await prisma.syncLog.update({
       where: { id: syncLog.id },
       data: { status: "failed", endedAt: new Date(), error: error.message }
     });
+  } finally {
+    endTimer();
+    syncRunsTotal.inc({ result });
   }
 };

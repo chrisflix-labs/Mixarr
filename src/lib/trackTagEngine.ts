@@ -1,8 +1,15 @@
 import prisma from "./prisma";
 import { getLastFmTrackTags } from "./providers/lastfm";
 import { resolveDelayMs, resolveLimit, type SyncEngineOptions } from "./syncSettings";
+import {
+  engineBatchSize,
+  trackAttemptsTotal,
+  trackDurationSeconds,
+} from "./metrics";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const ENGINE = "tags";
 
 export const runTrackTagEngine = async (options: SyncEngineOptions = {}) => {
   console.log("[TrackTagEngine] Starting background track tag sync...");
@@ -17,8 +24,11 @@ export const runTrackTagEngine = async (options: SyncEngineOptions = {}) => {
     });
 
     console.log(`[TrackTagEngine] Found ${tracksToProcess.length} tracks needing tags.`);
+    engineBatchSize.observe({ engine: ENGINE }, tracksToProcess.length);
 
     for (const track of tracksToProcess) {
+      let outcome: "success" | "not_found" | "rate_limited" | "error" = "success";
+      const endTimer = trackDurationSeconds.startTimer({ engine: ENGINE });
       try {
         const tags = await getLastFmTrackTags(track.artist.title, track.title);
 
@@ -47,6 +57,7 @@ export const runTrackTagEngine = async (options: SyncEngineOptions = {}) => {
           console.log(`[TrackTagEngine] Track "${track.title}" -> Tags: ${tags.join(", ")}`);
         } else {
           // No tags found, but we still mark it as synced so we don't retry it constantly
+          outcome = "not_found";
         }
 
         // Mark track as synced
@@ -57,6 +68,10 @@ export const runTrackTagEngine = async (options: SyncEngineOptions = {}) => {
 
       } catch (e: any) {
         console.error(`[TrackTagEngine] Unexpected error on track ${track.title}:`, e.message);
+        outcome = "error";
+      } finally {
+        endTimer();
+        trackAttemptsTotal.inc({ engine: ENGINE, result: outcome });
       }
 
       if (providerDelayMs > 0) {

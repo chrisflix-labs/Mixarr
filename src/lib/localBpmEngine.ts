@@ -5,8 +5,15 @@ import path from "path";
 import prisma from "./prisma";
 import { getDeezerBpm } from "./providers/deezer";
 import { resolveDelayMs, resolveLimit, type SyncEngineOptions } from "./syncSettings";
+import {
+  engineBatchSize,
+  trackAttemptsTotal,
+  trackDurationSeconds,
+} from "./metrics";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const ENGINE = "bpm";
 
 const sampleSeconds = Number(process.env.LOCAL_BPM_SAMPLE_SECONDS || 180);
 const retryDays = Number(process.env.LOCAL_BPM_RETRY_DAYS || 14);
@@ -263,17 +270,17 @@ export const runLocalBpmEngine = async (options: SyncEngineOptions = {}) => {
     await assertLocalBpmDependencies();
     const tracksToProcess = await findTracksForBpmBackfill(batchSize);
     console.log(`[LocalBpmEngine] Found ${tracksToProcess.length} tracks needing BPM backfill.`);
+    engineBatchSize.observe({ engine: ENGINE }, tracksToProcess.length);
 
     for (const track of tracksToProcess) {
+      let outcome: "success" | "not_found" | "rate_limited" | "error" = "success";
+      const endTimer = trackDurationSeconds.startTimer({ engine: ENGINE });
       try {
         const deezerBpm = validBpm(await getDeezerBpm(track.artist.title, track.title));
         if (deezerBpm) {
           const tempo = normalizeBpm(deezerBpm);
           await saveTempo(track.id, tempo, "Deezer", 0.9);
           console.log(`[LocalBpmEngine] ${track.artist.title} - ${track.title} -> ${tempo} BPM (Deezer)`);
-          if (providerDelayMs > 0) {
-            await sleep(providerDelayMs);
-          }
           continue;
         }
 
@@ -284,10 +291,19 @@ export const runLocalBpmEngine = async (options: SyncEngineOptions = {}) => {
         } else {
           await saveTempo(track.id, null, "local_not_found", 0);
           console.log(`[LocalBpmEngine] ${track.artist.title} - ${track.title} -> BPM not found`);
+          outcome = "not_found";
         }
       } catch (error: any) {
         console.error(`[LocalBpmEngine] Failed ${track.artist.title} - ${track.title}:`, error.message);
         await saveTempo(track.id, null, "local_not_found", 0).catch(() => undefined);
+        outcome = "error";
+      } finally {
+        endTimer();
+        trackAttemptsTotal.inc({ engine: ENGINE, result: outcome });
+      }
+
+      if (providerDelayMs > 0) {
+        await sleep(providerDelayMs);
       }
     }
 

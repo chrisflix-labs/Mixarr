@@ -1,6 +1,24 @@
 import axios from "axios";
 import prisma from "../prisma";
+import {
+  providerRequestDurationSeconds,
+  providerRequestsTotal,
+} from "../metrics";
 
+const PROVIDER = "spotify";
+
+type Outcome = "success" | "not_found" | "timeout" | "rate_limited" | "error";
+
+function classifyError(error: any): "timeout" | "rate_limited" | "error" {
+  if (error?.code === "ECONNABORTED") return "timeout";
+  if (error?.response?.status === 429) return "rate_limited";
+  return "error";
+}
+
+// Key used in the SystemState table for the Spotify rate-limit backoff
+// expiry. Persisting this is what makes a container restart respect a
+// multi-hour 429 Retry-After instead of forgetting it and immediately
+// hammering Spotify on the next run.
 const SPOTIFY_FAILURE_KEY = "spotify_token_failure_time";
 
 let spotifyToken: string | null = null;
@@ -100,9 +118,18 @@ const getSpotifyToken = async (): Promise<string | null> => {
 };
 
 export const getSpotifyPopularity = async (artist: string, track: string): Promise<number | null> => {
+  const endTimer = providerRequestDurationSeconds.startTimer({ provider: PROVIDER });
+  let result: Outcome = "success";
+
   try {
     const token = await getSpotifyToken();
-    if (!token) return null;
+    if (!token) {
+      // No token = either creds missing, or we're in a persisted backoff
+      // window. Either way it's effectively a rate-limit skip from the
+      // engine's POV.
+      result = "rate_limited";
+      return null;
+    }
 
     const query = `artist:${artist} track:${track}`;
     const response = await axios.get("https://api.spotify.com/v1/search", {
@@ -121,12 +148,15 @@ export const getSpotifyPopularity = async (artist: string, track: string): Promi
       return response.data.tracks.items[0].popularity;
     }
 
+    result = "not_found";
     return null;
   } catch (error: any) {
     if (error.message === "NO_TOKEN" || (error.message && error.message.startsWith("RATE_LIMIT"))) {
+      result = "rate_limited";
       throw error;
     }
 
+    result = classifyError(error);
     const status = error.response?.status;
     if (status === 429) {
       const retryAfter = Number(error.response?.headers['retry-after']) || 5;
@@ -137,13 +167,22 @@ export const getSpotifyPopularity = async (artist: string, track: string): Promi
 
     console.error(`Spotify fetch failed for ${artist} - ${track}:`, error.message, status || '');
     return null;
+  } finally {
+    endTimer();
+    providerRequestsTotal.inc({ provider: PROVIDER, result });
   }
 };
 
 export const getSpotifyAudioFeatures = async (artist: string, track: string): Promise<any> => {
+  const endTimer = providerRequestDurationSeconds.startTimer({ provider: PROVIDER });
+  let result: Outcome = "success";
+
   try {
     const token = await getSpotifyToken();
-    if (!token) throw new Error("NO_TOKEN");
+    if (!token) {
+      result = "rate_limited";
+      throw new Error("NO_TOKEN");
+    }
 
     // Simplify query to avoid strict matching failures with special characters
     const query = `${artist} ${track}`.substring(0, 100); // Spotify max query length
@@ -154,6 +193,7 @@ export const getSpotifyAudioFeatures = async (artist: string, track: string): Pr
     });
 
     if (!searchRes.data?.tracks?.items?.length) {
+      result = "not_found";
       return null;
     }
 
@@ -163,7 +203,10 @@ export const getSpotifyAudioFeatures = async (artist: string, track: string): Pr
       headers: { 'Authorization': `Bearer ${token}` }
     });
 
-    if (!featureRes.data) return null;
+    if (!featureRes.data) {
+      result = "not_found";
+      return null;
+    }
 
     return {
       energy: featureRes.data.energy,
@@ -173,9 +216,11 @@ export const getSpotifyAudioFeatures = async (artist: string, track: string): Pr
     };
   } catch (error: any) {
     if (error.message === "NO_TOKEN" || (error.message && error.message.startsWith("RATE_LIMIT"))) {
+      result = "rate_limited";
       throw error; // Let the engine catch auth/rate limit errors so it doesn't save empty rows
     }
 
+    result = classifyError(error);
     const status = error.response?.status;
     if (status === 429) {
       const retryAfter = Number(error.response?.headers['retry-after']) || 5;
@@ -192,5 +237,8 @@ export const getSpotifyAudioFeatures = async (artist: string, track: string): Pr
     
     console.error(`[Spotify] Error fetching ${artist} - ${track}:`, error.message, status || '');
     return null;
+  } finally {
+    endTimer();
+    providerRequestsTotal.inc({ provider: PROVIDER, result });
   }
 };

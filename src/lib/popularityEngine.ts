@@ -3,8 +3,15 @@ import { getDeezerPopularity } from "./providers/deezer";
 import { getLastFmPopularity } from "./providers/lastfm";
 import { getSpotifyPopularity } from "./providers/spotify";
 import { resolveDelayMs, resolveLimit, type SyncEngineOptions } from "./syncSettings";
+import {
+  engineBatchSize,
+  trackAttemptsTotal,
+  trackDurationSeconds,
+} from "./metrics";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const ENGINE = "popularity";
 
 export const runPopularityEngine = async (options: SyncEngineOptions = {}) => {
   console.log("[PopularityEngine] Starting background popularity sync...");
@@ -21,11 +28,14 @@ export const runPopularityEngine = async (options: SyncEngineOptions = {}) => {
     });
 
     console.log(`[PopularityEngine] Found ${tracksToProcess.length} tracks needing popularity data.`);
+    engineBatchSize.observe({ engine: ENGINE }, tracksToProcess.length);
 
     for (const track of tracksToProcess) {
       let score: number | null = null;
       let provider = "none";
       let confidence = 0;
+      let outcome: "success" | "not_found" | "rate_limited" | "error" = "success";
+      const endTimer = trackDurationSeconds.startTimer({ engine: ENGINE });
 
       try {
         // 1. Try Deezer (Primary)
@@ -88,14 +98,20 @@ export const runPopularityEngine = async (options: SyncEngineOptions = {}) => {
               lastUpdated: new Date()
             }
           });
+          outcome = "not_found";
         }
       } catch (e: any) {
         if (e.message === "NO_TOKEN" || e.message?.startsWith("RATE_LIMIT")) {
           // We got rate limited by Spotify (or token failed). Do NOT save an empty row. 
           // Just skip to the next track so this one can be retried on the next run.
+          outcome = "rate_limited";
         } else {
           console.error(`[PopularityEngine] Unexpected error on track ${track.title}:`, e.message);
+          outcome = "error";
         }
+      } finally {
+        endTimer();
+        trackAttemptsTotal.inc({ engine: ENGINE, result: outcome });
       }
 
       if (providerDelayMs > 0) {

@@ -21,6 +21,9 @@ services:
     restart: always
     ports:
       - "3030:3000"
+      # Uncomment to expose the Prometheus metrics endpoint to the host.
+      # The container-side port must match METRICS_PORT below.
+      # - "9090:9090"
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://${POSTGRES_USER:-mixarr}:${POSTGRES_PASSWORD:-mixarrpass}@db:5432/${POSTGRES_DB:-mixarrdb}?schema=public
@@ -38,6 +41,9 @@ services:
       - LOCAL_BPM_CONFIDENCE_THRESHOLD=${LOCAL_BPM_CONFIDENCE_THRESHOLD:-0.75}
       - LOCAL_BPM_FFMPEG_PATH=${LOCAL_BPM_FFMPEG_PATH:-ffmpeg}
       - LOCAL_BPM_AUBIO_PATH=${LOCAL_BPM_AUBIO_PATH:-aubio}
+      - SYNC_CRON_SCHEDULE=${SYNC_CRON_SCHEDULE:-0 3 * * *}
+      - SYNC_MAX_PIPELINE_MS=${SYNC_MAX_PIPELINE_MS:-21600000}
+      - METRICS_PORT=${METRICS_PORT:-0}
     depends_on:
       db:
         condition: service_healthy
