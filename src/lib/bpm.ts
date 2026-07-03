@@ -3,6 +3,9 @@ import type { Prisma } from "@prisma/client";
 export const bpmAnalysisStatuses = ["success", "no_data", "failed", "extraction_failed", "analyzer_failed", "too_short"] as const;
 export type BpmAnalysisStatus = typeof bpmAnalysisStatuses[number];
 export type BpmRetryProviderMode = "configured" | "api_only" | "local_only" | "force_local";
+export const bpmBackfillFilters = ["missing_bpm", "api_bpm", "imported_legacy_bpm", "all_active", "failed", "tracks_with_bpm", "local_bpm"] as const;
+export type BpmBackfillFilter = typeof bpmBackfillFilters[number];
+export type BpmSourceType = "api_bpm" | "local_bpm" | "imported_bpm";
 
 export type TrackWithBpmSources = {
   bpm?: unknown;
@@ -40,6 +43,11 @@ function isLocalBpmSource(source: unknown) {
   return normalized === "local_essentia"
     || normalized === "essentia"
     || normalized.startsWith("essentia");
+}
+
+function isApiBpmSource(source: unknown) {
+  const normalized = String(source || "").trim().toLowerCase();
+  return normalized === "api" || normalized === "deezer";
 }
 
 function isAubioBpmSource(source: unknown) {
@@ -91,6 +99,13 @@ export function hasLocalEssentiaBpmSuccess(track: TrackWithBpmSources) {
       getValidBpm(track.audioFeatures?.tempo) !== null
       && isLocalBpmSource(track.audioFeatures?.tempoSource)
     );
+}
+
+export function classifyBpmSource(track: TrackWithBpmSources): BpmSourceType | "missing_bpm" {
+  if (getEffectiveBpm(track) === null) return "missing_bpm";
+  if (hasLocalEssentiaBpmSuccess(track)) return "local_bpm";
+  if (getValidBpm(track.apiBpm) !== null || isApiBpmSource(track.bpmSource)) return "api_bpm";
+  return "imported_bpm";
 }
 
 export function effectiveBpmTrackWhere(
@@ -169,55 +184,31 @@ export function missingEffectiveBpmTrackWhere(): Prisma.TrackWhereInput {
   };
 }
 
-export function localBpmSourceTrackWhere(): Prisma.TrackWhereInput {
+function localBpmSuccessSourceWhere(): Prisma.TrackWhereInput {
   return {
     OR: [
       { localBpm: { gt: 0 } },
       { bpmSource: { in: ["local_essentia", "essentia", "aubio"] } },
       {
-        audioFeature: {
-          is: {
-            OR: [
-              { tempoSource: { startsWith: "Essentia" } },
-              { tempoSource: { startsWith: "Aubio" } },
-              { tempoSource: { in: ["local_not_found", "local_failed", "local_extraction_failed", "local_analyzer_failed", "local_too_short"] } },
-            ],
-          },
-        },
-      },
-    ],
-  };
-}
-
-export function localEssentiaBpmSuccessTrackWhere(): Prisma.TrackWhereInput {
-  return {
-    OR: [
-      {
-        AND: [
-          { localBpm: { gt: 0 } },
-          {
-            OR: [
-              { audioFeature: null },
-              { audioFeature: { is: { tempoSource: null } } },
-              { audioFeature: { is: { NOT: { tempoSource: { startsWith: "Aubio" } } } } },
-            ],
-          },
-        ],
-      },
-      {
         AND: [
           { bpmAnalysisStatus: "success" },
-          { bpmSource: { in: ["local_essentia", "essentia"] } },
+          { bpmSource: { in: ["local_essentia", "essentia", "aubio"] } },
         ],
       },
       {
         audioFeature: {
           is: {
-            AND: [
-              { tempo: { gt: 0 } },
+            OR: [
               {
-                OR: [
+                AND: [
+                  { tempo: { gt: 0 } },
                   { tempoSource: { startsWith: "Essentia" } },
+                ],
+              },
+              {
+                AND: [
+                  { tempo: { gt: 0 } },
+                  { tempoSource: { startsWith: "Aubio" } },
                 ],
               },
             ],
@@ -228,29 +219,61 @@ export function localEssentiaBpmSuccessTrackWhere(): Prisma.TrackWhereInput {
   };
 }
 
-export function apiBpmTrackWhere(): Prisma.TrackWhereInput {
-  return {
-    OR: [
-      { apiBpm: { gt: 0 } },
-      { bpmSource: { in: ["api", "deezer"] } },
-    ],
-  };
-}
-
-export function importedBpmTrackWhere(): Prisma.TrackWhereInput {
+function apiBpmSourceWhere(): Prisma.TrackWhereInput {
   return {
     AND: [
       effectiveBpmTrackWhere(),
-      { apiBpm: null },
-      { localBpm: null },
+      { NOT: localBpmSuccessSourceWhere() },
       {
         OR: [
-          { bpmSource: null },
-          { bpmSource: { notIn: ["api", "deezer", "local_essentia", "essentia", "aubio"] } },
+          { apiBpm: { gt: 0 } },
+          { bpmSource: { in: ["api", "deezer"] } },
         ],
       },
     ],
   };
+}
+
+function importedBpmSourceWhere(): Prisma.TrackWhereInput {
+  return {
+    AND: [
+      effectiveBpmTrackWhere(),
+      { NOT: localBpmSuccessSourceWhere() },
+      { NOT: apiBpmSourceWhere() },
+    ],
+  };
+}
+
+export function buildBpmSourceWhereClause(sourceType: BpmSourceType): Prisma.TrackWhereInput {
+  switch (sourceType) {
+    case "api_bpm":
+      return apiBpmSourceWhere();
+    case "local_bpm":
+      return {
+        AND: [
+          effectiveBpmTrackWhere(),
+          localBpmSuccessSourceWhere(),
+        ],
+      };
+    case "imported_bpm":
+      return importedBpmSourceWhere();
+  }
+}
+
+export function localBpmSourceTrackWhere(): Prisma.TrackWhereInput {
+  return buildBpmSourceWhereClause("local_bpm");
+}
+
+export function localEssentiaBpmSuccessTrackWhere(): Prisma.TrackWhereInput {
+  return localBpmSourceTrackWhere();
+}
+
+export function apiBpmTrackWhere(): Prisma.TrackWhereInput {
+  return buildBpmSourceWhereClause("api_bpm");
+}
+
+export function importedBpmTrackWhere(): Prisma.TrackWhereInput {
+  return buildBpmSourceWhereClause("imported_bpm");
 }
 
 export function bpmAnalysisAttemptedTrackWhere(): Prisma.TrackWhereInput {
@@ -423,11 +446,65 @@ export function pendingBpmBackfillTrackWhere(): Prisma.TrackWhereInput {
   };
 }
 
+export function normalizeBpmBackfillFilter(value: unknown, options: { force?: boolean } = {}): BpmBackfillFilter {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "api_bpm") return "api_bpm";
+  if (normalized === "imported_bpm" || normalized === "imported_legacy_bpm") return "imported_legacy_bpm";
+  if (normalized === "tracks_with_bpm") return "tracks_with_bpm";
+  if (normalized === "local_bpm") return "local_bpm";
+  if (normalized === "all_active") return "all_active";
+  if (
+    normalized === "failed"
+    || normalized === "bpm_failed"
+    || normalized === "bpm_no_data"
+    || normalized === "extraction_failed"
+    || normalized === "analyzer_failed"
+    || normalized === "too_short"
+  ) return "failed";
+  if (options.force && !normalized) return "all_active";
+  return "missing_bpm";
+}
+
+export function bpmBackfillFilterTrackWhere(filter: BpmBackfillFilter): Prisma.TrackWhereInput {
+  switch (filter) {
+    case "api_bpm":
+      return apiBpmTrackWhere();
+    case "imported_legacy_bpm":
+      return importedBpmTrackWhere();
+    case "all_active":
+      return {};
+    case "tracks_with_bpm":
+      return effectiveBpmTrackWhere();
+    case "local_bpm":
+      return localBpmSourceTrackWhere();
+    case "failed":
+      return {
+        OR: [
+          bpmNoDataMarkerTrackWhere(),
+          bpmFailedMarkerTrackWhere(),
+          bpmExtractionFailedMarkerTrackWhere(),
+          bpmAnalyzerFailedMarkerTrackWhere(),
+          bpmTooShortMarkerTrackWhere(),
+        ],
+      };
+    case "missing_bpm":
+      return missingEffectiveBpmTrackWhere();
+  }
+}
+
 export function bpmBackfillCandidateTrackWhere(options: {
   retryNoDataFailed?: boolean;
   includeAubioReprocess?: boolean;
   reprocessApiWithLocal?: boolean;
+  filter?: unknown;
+  force?: boolean;
 } = {}): Prisma.TrackWhereInput {
+  const filter = normalizeBpmBackfillFilter(options.filter, { force: options.force });
+  const explicitFilteredReprocess = filter !== "missing_bpm" || !!options.force;
+  if (explicitFilteredReprocess) {
+    return bpmBackfillFilterTrackWhere(filter);
+  }
+
   const missingBpmWhere: Prisma.TrackWhereInput = options.retryNoDataFailed
     ? missingEffectiveBpmTrackWhere()
     : pendingBpmBackfillTrackWhere();
@@ -466,6 +543,8 @@ export function bpmBackfillTrackWhere(options: {
   includeAubioReprocess?: boolean;
   retryNoDataFailed?: boolean;
   reprocessApiWithLocal?: boolean;
+  filter?: unknown;
+  force?: boolean;
   activeOnly?: boolean;
 } = {}): Prisma.TrackWhereInput {
   const eligibility = bpmBackfillCandidateTrackWhere(options);
@@ -481,6 +560,8 @@ export function explainBpmBackfillEligibility(track: TrackWithBpmSources, option
   includeAubioReprocess?: boolean;
   retryNoDataFailed?: boolean;
   reprocessApiWithLocal?: boolean;
+  filter?: unknown;
+  force?: boolean;
 } = {}) {
   const effectiveBpm = getEffectiveBpm(track);
   const localSuccess = hasLocalEssentiaBpmSuccess(track);
@@ -502,8 +583,21 @@ export function explainBpmBackfillEligibility(track: TrackWithBpmSources, option
         && !isLocalBpmSource(track.bpmSource)
       )
     );
-  const selected = retryableMissing || pendingMissing || aubioReprocess || apiOrImportedReprocess;
+  const normalizedFilter = normalizeBpmBackfillFilter(options.filter, { force: options.force });
+  const classifiedSource = classifyBpmSource(track);
+  const failedMarker = ["no_data", "failed", "extraction_failed", "analyzer_failed", "too_short"].includes(status);
+  const filterSelected = normalizedFilter === "all_active"
+    || (normalizedFilter === "tracks_with_bpm" && effectiveBpm !== null)
+    || (normalizedFilter === "local_bpm" && classifiedSource === "local_bpm")
+    || (normalizedFilter === "missing_bpm" && missing)
+    || (normalizedFilter === "api_bpm" && classifiedSource === "api_bpm")
+    || (normalizedFilter === "imported_legacy_bpm" && classifiedSource === "imported_bpm")
+    || (normalizedFilter === "failed" && failedMarker);
+  const filteredReprocess = (normalizedFilter !== "missing_bpm" || !!options.force)
+    && filterSelected;
+  const selected = filteredReprocess || retryableMissing || pendingMissing || aubioReprocess || apiOrImportedReprocess;
   const reasons = [
+    filteredReprocess ? `${normalizedFilter}${options.force ? "_force" : "_local_reprocess"}` : null,
     retryableMissing ? "missing_effective_bpm_retry" : null,
     pendingMissing ? "missing_effective_bpm_pending" : null,
     aubioReprocess ? "aubio_reprocess_without_local_success" : null,
@@ -528,8 +622,14 @@ export function explainBpmBackfillEligibility(track: TrackWithBpmSources, option
 export function bpmRetryEligibilityTrackWhere(options: {
   force?: boolean;
   providerMode?: BpmRetryProviderMode;
+  filter?: unknown;
 } = {}): Prisma.TrackWhereInput {
   if (options.force || options.providerMode === "force_local") return {};
+
+  const filter = normalizeBpmBackfillFilter(options.filter);
+  if (options.providerMode === "local_only" && filter !== "missing_bpm") {
+    return {};
+  }
 
   return {
     AND: [

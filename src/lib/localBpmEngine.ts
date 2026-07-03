@@ -5,6 +5,7 @@ import os from "os";
 import path from "path";
 import prisma from "./prisma";
 import {
+  bpmBackfillFilterTrackWhere,
   bpmBackfillTrackWhere,
   bpmAnalyzerFailedTrackWhere,
   bpmExtractionFailedTrackWhere,
@@ -14,8 +15,10 @@ import {
   explainBpmBackfillEligibility,
   hasLocalEssentiaBpmSuccess,
   missingEffectiveBpmTrackWhere,
+  normalizeBpmBackfillFilter,
   pendingBpmBackfillTrackWhere,
   type BpmAnalysisStatus,
+  type BpmBackfillFilter,
 } from "./bpm";
 import { getDeezerBpm } from "./providers/deezer";
 import { isRateLimitError } from "./providers/rateLimit";
@@ -1200,7 +1203,7 @@ function canonicalBpmSource(source: string) {
   return source.trim() || "unknown";
 }
 
-function effectiveBpmFromSources(input: {
+export function effectiveBpmFromSources(input: {
   apiBpm: number | null;
   localBpm: number | null;
   importedBpm: number | null;
@@ -1433,6 +1436,8 @@ async function logBpmBackfillQueueStats(
   includeAubioReprocess: boolean,
   retryNoDataFailed: boolean,
   reprocessApiWithLocal: boolean,
+  filter: BpmBackfillFilter,
+  force: boolean,
 ) {
   const active = { syncStatus: "active" } as const;
 
@@ -1459,7 +1464,7 @@ async function logBpmBackfillQueueStats(
   ], resolveDbJobConcurrency());
 
   console.log(
-    `[LocalBpmEngine] Queue status: total=${total}, withBpm=${withBpm}, missing=${missing}, pending=${pending}, noData=${noData}, failed=${failed}, extractionFailed=${extractionFailed}, analyzerFailed=${analyzerFailed}, candidates=${candidates}, retryNoDataFailed=${retryNoDataFailed ? "on" : "off"}, reprocessAubio=${includeAubioReprocess ? "on" : "off"}, reprocessApi=${reprocessApiWithLocal ? "on" : "off"}.`,
+    `[LocalBpmEngine] Queue status: filter=${filter}, force=${force ? "on" : "off"}, total=${total}, withBpm=${withBpm}, missing=${missing}, pending=${pending}, noData=${noData}, failed=${failed}, extractionFailed=${extractionFailed}, analyzerFailed=${analyzerFailed}, candidates=${candidates}, retryNoDataFailed=${retryNoDataFailed ? "on" : "off"}, reprocessAubio=${includeAubioReprocess ? "on" : "off"}, reprocessApi=${reprocessApiWithLocal ? "on" : "off"}.`,
   );
 }
 
@@ -1469,6 +1474,8 @@ async function logInitialBpmCandidateReasons(
     includeAubioReprocess: boolean;
     retryNoDataFailed: boolean;
     reprocessApiWithLocal: boolean;
+    filter?: unknown;
+    force?: boolean;
   },
 ) {
   await safeTrackBatchIterator<any>({
@@ -1495,12 +1502,18 @@ async function logInitialBpmCandidateReasons(
 }
 
 export const runLocalBpmEngine = async (options: SyncEngineOptions = {}) => {
-  console.log("[LocalBpmEngine] Starting BPM backfill...");
-
   let summary: EnrichmentRunSummary = { attempted: 0, processed: 0, skipped: 0, failed: 0 };
 
   try {
     const metadataSettings = logMetadataProviderSettings(options).bpm;
+    const force = !!options.bpmBackfillForce;
+    const filter = normalizeBpmBackfillFilter(options.bpmBackfillFilter, { force });
+    const provider = !metadataSettings.api && metadataSettings.local
+      ? "local"
+      : metadataSettings.api && !metadataSettings.local
+        ? "api"
+        : "configured";
+    console.log(`[LocalBpmEngine] Starting BPM backfill filter=${filter} force=${force} provider=${provider}`);
     if (!metadataSettings.api && !metadataSettings.local) {
       console.log("[LocalBpmEngine] BPM providers are disabled; skipping BPM backfill.");
       return summary;
@@ -1530,11 +1543,40 @@ export const runLocalBpmEngine = async (options: SyncEngineOptions = {}) => {
       includeAubioReprocess,
       retryNoDataFailed,
       reprocessApiWithLocal: metadataSettings.reprocessApiWithLocal,
+      filter,
+      force,
     };
-    const where = bpmBackfillTrackWhere(eligibilityOptions);
-    await logBpmBackfillQueueStats(where, includeAubioReprocess, retryNoDataFailed, metadataSettings.reprocessApiWithLocal);
+    const extraScope: any[] = [];
+    if (options.bpmBackfillLibraryId || options.bpmBackfillUserId) {
+      extraScope.push({
+        library: {
+          ...(options.bpmBackfillLibraryId ? { id: options.bpmBackfillLibraryId } : {}),
+          ...(options.bpmBackfillUserId ? { server: { userId: options.bpmBackfillUserId } } : {}),
+        },
+      });
+    }
+    if (options.bpmBackfillTrackIds?.length) {
+      extraScope.push({ id: { in: options.bpmBackfillTrackIds } });
+    }
+    const unscopedWhere = bpmBackfillTrackWhere(eligibilityOptions);
+    const where = extraScope.length ? { AND: [unscopedWhere, ...extraScope] } : unscopedWhere;
+    const targetWhere = extraScope.length
+      ? { AND: [{ syncStatus: "active" }, bpmBackfillFilterTrackWhere(filter), ...extraScope] }
+      : { AND: [{ syncStatus: "active" }, bpmBackfillFilterTrackWhere(filter)] };
+    await logBpmBackfillQueueStats(where, includeAubioReprocess, retryNoDataFailed, metadataSettings.reprocessApiWithLocal, filter, force);
+    const targetCount = await prisma.track.count({ where: targetWhere });
     const candidateCount = await prisma.track.count({ where });
-    console.log(`[LocalBpmEngine] Found ${candidateCount} tracks needing BPM backfill.`);
+    const filterLabel = filter === "api_bpm"
+      ? "API BPM tracks eligible for local reprocess"
+      : filter === "imported_legacy_bpm"
+        ? "imported/legacy BPM tracks eligible for local reprocess"
+        : "tracks needing BPM backfill";
+    console.log(`[LocalBpmEngine] Found ${candidateCount} ${filterLabel}.`);
+    if (candidateCount === 0) {
+      console.log(
+        `[LocalBpmEngine] No BPM candidates selected: filter=${filter}, targetCount=${targetCount}, force=${force}, provider=${provider}, localEnabled=${metadataSettings.local}, apiEnabled=${metadataSettings.api}.`,
+      );
+    }
     await logInitialBpmCandidateReasons(where, eligibilityOptions);
     engineBatchSize.observe({ engine: ENGINE }, Math.min(candidateCount, batchSize || candidateCount));
 

@@ -16,7 +16,7 @@ export async function POST(req: Request) {
 
   try {
     const body = await req.json();
-    const { libraryId, engine = 'plex', providerMode, audioFeaturePartialBefore } = body;
+    const { libraryId, engine = 'plex', providerMode, audioFeaturePartialBefore, filter, trackIds, force } = body;
     const baseSyncSettings = await getUserSyncSettings(userId);
     const syncSettings = {
       ...baseSyncSettings,
@@ -24,7 +24,16 @@ export async function POST(req: Request) {
       ...(engine === "bpm" && (providerMode === "local_only" || providerMode === "force_local") ? {
         enableApiBpm: false,
         enableLocalBpm: true,
-        reprocessApiBpmWithLocal: providerMode === "force_local",
+        preferLocalBpm: true,
+        reprocessApiBpmWithLocal: true,
+      } : {}),
+      ...(engine === "bpm" ? {
+        bpmBackfillFilter: typeof filter === "string" ? filter : null,
+        bpmBackfillLibraryId: typeof libraryId === "string" ? libraryId : null,
+        bpmBackfillUserId: userId,
+        bpmBackfillTrackIds: Array.isArray(trackIds) ? trackIds.filter((id) => typeof id === "string") : null,
+        bpmBackfillForce: providerMode === "force_local" || force === true,
+        bpmBackfillProviderMode: typeof providerMode === "string" ? providerMode : "configured",
       } : {}),
       ...(engine === "audio" && providerMode === "api_only" ? { enableApiAudioFeatures: true, enableLocalAudioFeatures: false } : {}),
       ...(engine === "audio" && (providerMode === "local_only" || providerMode === "force_local") ? {

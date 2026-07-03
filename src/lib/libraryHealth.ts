@@ -20,13 +20,16 @@ import {
   bpmExtractionFailedTrackWhere,
   bpmFailedTrackWhere,
   bpmNoDataTrackWhere,
+  bpmRetryEligibilityTrackWhere,
   bpmTooShortTrackWhere,
+  buildBpmSourceWhereClause,
   effectiveBpmTrackWhere,
   getEffectiveBpm,
   importedBpmTrackWhere,
   localBpmSourceTrackWhere,
   missingEffectiveBpmTrackWhere,
   pendingBpmBackfillTrackWhere,
+  type BpmRetryProviderMode,
 } from "./bpm";
 import { getUserSyncSettings, metadataProviderModeLabel, resolveMetadataProviderSettings } from "./syncSettings";
 
@@ -170,9 +173,9 @@ export function isMetadataHealthSection(value: unknown): value is MetadataHealth
 export function bpmHealthFilterWhere(filter: BpmHealthFilter): Prisma.TrackWhereInput {
   switch (filter) {
     case "tracks_with_bpm": return effectiveBpmTrackWhere();
-    case "api_bpm": return apiBpmTrackWhere();
-    case "local_bpm": return localBpmSourceTrackWhere();
-    case "imported_bpm": return importedBpmTrackWhere();
+    case "api_bpm": return buildBpmSourceWhereClause("api_bpm");
+    case "local_bpm": return buildBpmSourceWhereClause("local_bpm");
+    case "imported_bpm": return buildBpmSourceWhereClause("imported_bpm");
     case "missing_bpm": return missingEffectiveBpmTrackWhere();
     case "bpm_no_data": return bpmNoDataTrackWhere();
     case "bpm_failed": return bpmFailedTrackWhere();
@@ -182,6 +185,63 @@ export function bpmHealthFilterWhere(filter: BpmHealthFilter): Prisma.TrackWhere
     case "pending_backfill": return pendingBpmBackfillTrackWhere();
     case "pending_bpm": return pendingBpmBackfillTrackWhere();
   }
+}
+
+export function bpmHealthFilterClassification(filter: BpmHealthFilter) {
+  switch (filter) {
+    case "api_bpm": return "source=api_bpm";
+    case "local_bpm": return "source=local_bpm";
+    case "imported_bpm": return "source=imported_bpm";
+    case "tracks_with_bpm": return "source=any_bpm";
+    case "missing_bpm": return "source=missing_bpm";
+    case "bpm_no_data": return "status=no_data";
+    case "bpm_failed": return "status=failed";
+    case "extraction_failed": return "status=extraction_failed";
+    case "analyzer_failed": return "status=analyzer_failed";
+    case "too_short": return "status=too_short";
+    case "pending_backfill":
+    case "pending_bpm":
+      return "status=pending";
+  }
+}
+
+export function buildBpmRetryBaseWhere(userId: string, options: {
+  filter: BpmHealthFilter;
+  libraryId?: string;
+  trackIds?: string[];
+}): Prisma.TrackWhereInput {
+  const targetWhere = options.trackIds?.length
+    ? { id: { in: options.trackIds } }
+    : bpmHealthFilterWhere(options.filter);
+
+  return {
+    AND: [
+      {
+        syncStatus: "active",
+        library: { ...(options.libraryId ? { id: options.libraryId } : {}), server: { userId } },
+      },
+      targetWhere,
+    ],
+  };
+}
+
+export function buildBpmRetryCandidateWhere(userId: string, options: {
+  filter: BpmHealthFilter;
+  libraryId?: string;
+  trackIds?: string[];
+  force?: boolean;
+  providerMode?: BpmRetryProviderMode;
+}): Prisma.TrackWhereInput {
+  return {
+    AND: [
+      buildBpmRetryBaseWhere(userId, options),
+      bpmRetryEligibilityTrackWhere({
+        force: options.force,
+        providerMode: options.providerMode,
+        filter: options.filter,
+      }),
+    ],
+  };
 }
 
 export function audioFeatureHealthFilterWhere(filter: AudioFeatureHealthFilter): Prisma.TrackWhereInput {
@@ -413,17 +473,17 @@ export async function getBpmHealthSummary(userId: string, libraryId?: string) {
     library: { ...(libraryId ? { id: libraryId } : {}), server: { userId } },
   };
   const [tracksWithBpm, apiBpm, localBpm, importedBpm, missingBpm, bpmNoData, bpmFailed, extractionFailed, analyzerFailed, tooShort, pendingBackfill] = await Promise.all([
-    prisma.track.count({ where: { AND: [active, effectiveBpmTrackWhere()] } }),
-    prisma.track.count({ where: { AND: [active, apiBpmTrackWhere()] } }),
-    prisma.track.count({ where: { AND: [active, localBpmSourceTrackWhere()] } }),
-    prisma.track.count({ where: { AND: [active, importedBpmTrackWhere()] } }),
-    prisma.track.count({ where: { AND: [active, missingEffectiveBpmTrackWhere()] } }),
-    prisma.track.count({ where: { AND: [active, bpmNoDataTrackWhere()] } }),
-    prisma.track.count({ where: { AND: [active, bpmFailedTrackWhere()] } }),
-    prisma.track.count({ where: { AND: [active, bpmExtractionFailedTrackWhere()] } }),
-    prisma.track.count({ where: { AND: [active, bpmAnalyzerFailedTrackWhere()] } }),
-    prisma.track.count({ where: { AND: [active, bpmTooShortTrackWhere()] } }),
-    prisma.track.count({ where: { AND: [active, pendingBpmBackfillTrackWhere()] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("tracks_with_bpm")] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("api_bpm")] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("local_bpm")] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("imported_bpm")] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("missing_bpm")] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("bpm_no_data")] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("bpm_failed")] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("extraction_failed")] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("analyzer_failed")] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("too_short")] } }),
+    prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("pending_bpm")] } }),
   ]);
   return { tracksWithBpm, apiBpm, localBpm, importedBpm, missingBpm, bpmNoData, bpmFailed, extractionFailed, analyzerFailed, tooShort, pendingBackfill };
 }
@@ -565,9 +625,9 @@ export async function getLibraryHealth(userId: string) {
       prisma.album.count({ where: { libraryId: library.id, syncStatus: "missing" } }),
       prisma.artist.count({ where: { libraryId: library.id, syncStatus: "missing" } }),
       prisma.track.count({ where: { AND: [active, effectiveBpmTrackWhere()] } }),
-      prisma.track.count({ where: { AND: [active, apiBpmTrackWhere()] } }),
-      prisma.track.count({ where: { AND: [active, localBpmSourceTrackWhere()] } }),
-      prisma.track.count({ where: { AND: [active, importedBpmTrackWhere()] } }),
+      prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("api_bpm")] } }),
+      prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("local_bpm")] } }),
+      prisma.track.count({ where: { AND: [active, bpmHealthFilterWhere("imported_bpm")] } }),
       prisma.track.count({ where: { AND: [active, missingEffectiveBpmTrackWhere()] } }),
       prisma.track.count({ where: { AND: [active, bpmNoDataTrackWhere()] } }),
       prisma.track.count({ where: { AND: [active, bpmFailedTrackWhere()] } }),

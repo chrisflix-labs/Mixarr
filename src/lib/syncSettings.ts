@@ -7,6 +7,12 @@ export type SyncEngineOptions = {
   tagBatchSize?: number | null;
   bpmBatchSize?: number | null;
   bpmReprocessNoDataFailed?: boolean | null;
+  bpmBackfillFilter?: string | null;
+  bpmBackfillLibraryId?: string | null;
+  bpmBackfillUserId?: string | null;
+  bpmBackfillTrackIds?: string[] | null;
+  bpmBackfillForce?: boolean | null;
+  bpmBackfillProviderMode?: string | null;
   enableApiBpm?: boolean | null;
   enableLocalBpm?: boolean | null;
   preferLocalBpm?: boolean | null;

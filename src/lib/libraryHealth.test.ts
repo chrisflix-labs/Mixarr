@@ -4,6 +4,9 @@ import { readFile } from "fs/promises";
 import path from "path";
 import { bpmFailedTrackWhere, pendingBpmBackfillTrackWhere } from "./bpm";
 import {
+  bpmHealthFilterWhere,
+  buildBpmRetryBaseWhere,
+  buildBpmRetryCandidateWhere,
   buildBpmTrackWhere,
   buildMetadataTrackWhere,
   buildMissingTrackWhere,
@@ -145,5 +148,42 @@ describe("library health", () => {
     assert.match(retryRoute, /revalidatePath\("\/settings\/library-health"\)/);
     assert.match(syncStartRoute, /logPartialAudioFeatureRetryResult/);
     assert.match(syncStartRoute, /revalidatePath\("\/settings\/library-health"\)/);
+  });
+
+  it("starts BPM retry jobs with the selected filter and provider mode", async () => {
+    const page = await readFile(path.join(process.cwd(), "src/app/settings/library-health/page.tsx"), "utf8");
+    const syncStartRoute = await readFile(path.join(process.cwd(), "src/app/api/sync/start/route.ts"), "utf8");
+
+    assert.match(page, /providerMode: "local_only"/);
+    assert.match(page, /filter: payload\.filter/);
+    assert.match(page, /force: providerMode === "force_local"/);
+    assert.match(syncStartRoute, /bpmBackfillFilter/);
+    assert.match(syncStartRoute, /preferLocalBpm: true/);
+    assert.match(syncStartRoute, /reprocessApiBpmWithLocal: true/);
+  });
+
+  it("uses the same API BPM predicate for health counts and local retry candidates", () => {
+    const healthWhere = buildBpmRetryBaseWhere("user-a", {
+      filter: "api_bpm",
+      libraryId: "library-a",
+    });
+    const retryWhere = buildBpmRetryCandidateWhere("user-a", {
+      filter: "api_bpm",
+      libraryId: "library-a",
+      providerMode: "local_only",
+    });
+
+    assert.deepEqual(retryWhere, { AND: [healthWhere, {}] });
+    assert.deepEqual((healthWhere as any).AND[1], bpmHealthFilterWhere("api_bpm"));
+  });
+
+  it("logs BPM retry health and candidate counts for mismatch diagnosis", async () => {
+    const retryRoute = await readFile(path.join(process.cwd(), "src/app/api/settings/library-health/bpm-retry/route.ts"), "utf8");
+
+    assert.match(retryRoute, /BPM retry requested filter=/);
+    assert.match(retryRoute, /BPM health count for/);
+    assert.match(retryRoute, /BPM retry candidates for/);
+    assert.match(retryRoute, /WARNING: BPM filter mismatch/);
+    assert.match(retryRoute, /sampleTrackIds/);
   });
 });

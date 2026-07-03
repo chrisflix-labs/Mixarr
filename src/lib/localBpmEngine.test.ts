@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import os from "os";
 import path from "path";
-import { buildFfmpegFullTrackDecodeArgs, buildFfmpegSampleArgs, redactSensitiveUrl, validateAudioSample } from "./localBpmEngine";
+import { buildFfmpegFullTrackDecodeArgs, buildFfmpegSampleArgs, effectiveBpmFromSources, redactSensitiveUrl, validateAudioSample } from "./localBpmEngine";
 
 describe("LocalBpmEngine sample safety", () => {
   it("builds both fast pre-input and accurate post-input seek commands", () => {
@@ -50,5 +50,16 @@ describe("LocalBpmEngine sample safety", () => {
     assert.doesNotMatch(source, /MusicExtractorSVM/);
     assert.match(source, /validateAudioSample\(temporaryPath/);
     assert.match(source, /rename\(temporaryPath, outputPath\)/);
+  });
+
+  it("selects local Essentia as effective BPM when local retry succeeds with local preference", () => {
+    const effective = effectiveBpmFromSources({
+      apiBpm: 120,
+      localBpm: 124,
+      importedBpm: null,
+      preferLocal: true,
+    });
+
+    assert.deepEqual(effective, { value: 124, source: "local_essentia" });
   });
 });
