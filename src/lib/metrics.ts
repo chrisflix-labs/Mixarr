@@ -11,6 +11,10 @@ import {
   effectiveBpmTrackWhere,
   noEffectiveBpmTrackWhere,
 } from "./bpm";
+import {
+  audioFeatureNoDataTrackWhere,
+  completeAudioFeatureTrackWhere,
+} from "./audioFeatures";
 
 /**
  * Prometheus metrics for Mixarr.
@@ -490,20 +494,11 @@ export const refreshStateGauges = async (): Promise<void> => {
         prisma.album.count({ where: { syncStatus: "active" } }),
         prisma.popularity.count({ where: { provider: { not: "not_found" }, track: { syncStatus: "active" } } }),
         prisma.popularity.count({ where: { provider: "not_found", track: { syncStatus: "active" } } }),
-        prisma.audioFeature.count({
-          where: {
-            track: { syncStatus: "active" },
-            OR: [
-              { energy: { not: null } },
-              { valence: { not: null } },
-              { danceability: { not: null } },
-              { tempo: { not: null } },
-            ],
-          },
-        }),
-        prisma.audioFeature.count({
-          where: { energy: null, valence: null, danceability: null, tempo: null, track: { syncStatus: "active" } },
-        }),
+        // "success" must mean the same "complete" the dashboard and health page report,
+        // not merely "has some value" - a BPM-only tempo or a 0.5 placeholder is not a
+        // complete audio feature, and counting them inflated this metric well past reality.
+        prisma.track.count({ where: { AND: [{ syncStatus: "active" }, completeAudioFeatureTrackWhere()] } }),
+        prisma.track.count({ where: { AND: [{ syncStatus: "active" }, audioFeatureNoDataTrackWhere()] } }),
         prisma.track.count({ where: { AND: [{ syncStatus: "active" }, effectiveBpmTrackWhere()] } }),
         prisma.track.count({ where: { AND: [{ syncStatus: "active" }, noEffectiveBpmTrackWhere()] } }),
         prisma.track.count({ where: { syncStatus: "active", tagsSyncedAt: { not: null } } }),
